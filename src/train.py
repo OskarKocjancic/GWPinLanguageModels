@@ -38,7 +38,10 @@ BIAS = True
 
 # Training (main parameters you can also experiment with)
 SEED = 1
-DEVICE = "cpu"          # If you can, try also seeing consumption when using gpu (change this to 'cuda' if torch.cuda.is_available() else 'cpu')
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+else:    
+    DEVICE = "cpu"
 DTYPE = "float32"       
 BATCH_SIZE = 32         # Number of sequences processed in parallel.
 BLOCK_SIZE = 256        # Maximum context length for predictions (e.g. 128 or 256). The longer the block size, the more memory and compute it requires, but it can also lead to better performance.
