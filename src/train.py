@@ -15,6 +15,7 @@ from dataclasses import asdict
 
 import numpy as np
 import torch
+from codecarbon import EmissionsTracker
 
 from model import GPTConfig, GPT
 
@@ -104,6 +105,13 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     set_seed(SEED)
 
+    tracker = EmissionsTracker(
+        project_name="gwp_lm_train",
+        output_dir=OUT_DIR,
+        output_file="emissions_train.csv",
+    )
+    tracker.start()
+
     meta = load_meta(DATA_DIR)
     vocab_size = meta["vocab_size"] if meta and "vocab_size" in meta else 50304
 
@@ -133,65 +141,71 @@ def main():
     # print(f"Model parameters: {model.get_num_params():,}")
     # print(f"Training for {MAX_ITERS} iterations | batch={BATCH_SIZE} | block={BLOCK_SIZE}")
 
-    t0 = time.time()
-    for it in range(MAX_ITERS + 1):
-        # periodic evaluation
-        if it % EVAL_INTERVAL == 0:
-            losses = estimate_loss(model, DATA_DIR, BLOCK_SIZE, BATCH_SIZE, DEVICE, EVAL_ITERS)
-            dt = time.time() - t0
-            print(f"iter {it:5d} | train loss {losses['train']:.4f} | val loss {losses['val']:.4f} | elapsed {dt:.1f}s")
+    total_emissions = None
+    try:
+        t0 = time.time()
+        for it in range(MAX_ITERS + 1):
+            # periodic evaluation
+            if it % EVAL_INTERVAL == 0:
+                losses = estimate_loss(model, DATA_DIR, BLOCK_SIZE, BATCH_SIZE, DEVICE, EVAL_ITERS)
+                dt = time.time() - t0
+                print(f"iter {it:5d} | train loss {losses['train']:.4f} | val loss {losses['val']:.4f} | elapsed {dt:.1f}s")
 
-            if SAVE_CHECKPOINT and it > 0:
-                config_dump = {
-                    "data_dir": DATA_DIR,
-                    "train": {
-                        "batch_size": BATCH_SIZE,
-                        "block_size": BLOCK_SIZE,
-                        "max_iters": MAX_ITERS,
-                        "learning_rate": LEARNING_RATE,
-                        "weight_decay": WEIGHT_DECAY,
-                        "grad_clip": GRAD_CLIP,
-                        "dtype": DTYPE,
-                        "device": DEVICE,
-                    },
-                    "model": asdict(cfg),
-                }
-                save_checkpoint(OUT_DIR, model, optimizer, it, config_dump)
+                if SAVE_CHECKPOINT and it > 0:
+                    config_dump = {
+                        "data_dir": DATA_DIR,
+                        "train": {
+                            "batch_size": BATCH_SIZE,
+                            "block_size": BLOCK_SIZE,
+                            "max_iters": MAX_ITERS,
+                            "learning_rate": LEARNING_RATE,
+                            "weight_decay": WEIGHT_DECAY,
+                            "grad_clip": GRAD_CLIP,
+                            "dtype": DTYPE,
+                            "device": DEVICE,
+                        },
+                        "model": asdict(cfg),
+                    }
+                    save_checkpoint(OUT_DIR, model, optimizer, it, config_dump)
 
-        # training step
-        x, y = get_batch("train", DATA_DIR, BLOCK_SIZE, BATCH_SIZE, DEVICE)
-        _, loss = model(x, y)
+            # training step
+            x, y = get_batch("train", DATA_DIR, BLOCK_SIZE, BATCH_SIZE, DEVICE)
+            _, loss = model(x, y)
 
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
 
-        if GRAD_CLIP and GRAD_CLIP > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+            if GRAD_CLIP and GRAD_CLIP > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
 
-        optimizer.step()
+            optimizer.step()
 
-        if it % LOG_INTERVAL == 0:
-            print(f"iter {it:5d} | loss {loss.item():.4f}")
+            if it % LOG_INTERVAL == 0:
+                print(f"iter {it:5d} | loss {loss.item():.4f}")
 
-    print("Training completed.")
+        print("Training completed.")
 
-    # Save final checkpoint
-    if SAVE_CHECKPOINT:
-        config_dump = {
-            "data_dir": DATA_DIR,
-            "train": {
-                "batch_size": BATCH_SIZE,
-                "block_size": BLOCK_SIZE,
-                "max_iters": MAX_ITERS,
-                "learning_rate": LEARNING_RATE,
-                "weight_decay": WEIGHT_DECAY,
-                "grad_clip": GRAD_CLIP,
-                "dtype": DTYPE,
-                "device": DEVICE,
-            },
-            "model": asdict(cfg),
-        }
-        save_checkpoint(OUT_DIR, model, optimizer, MAX_ITERS, config_dump)
+        # Save final checkpoint
+        if SAVE_CHECKPOINT:
+            config_dump = {
+                "data_dir": DATA_DIR,
+                "train": {
+                    "batch_size": BATCH_SIZE,
+                    "block_size": BLOCK_SIZE,
+                    "max_iters": MAX_ITERS,
+                    "learning_rate": LEARNING_RATE,
+                    "weight_decay": WEIGHT_DECAY,
+                    "grad_clip": GRAD_CLIP,
+                    "dtype": DTYPE,
+                    "device": DEVICE,
+                },
+                "model": asdict(cfg),
+            }
+            save_checkpoint(OUT_DIR, model, optimizer, MAX_ITERS, config_dump)
+    finally:
+        total_emissions = tracker.stop()
+        if total_emissions is not None:
+            print(f"Total training emissions: {total_emissions:.6f} kg CO2eq")
 
 if __name__ == "__main__":
     main()

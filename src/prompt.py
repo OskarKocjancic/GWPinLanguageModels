@@ -8,6 +8,7 @@ Source: https://github.com/karpathy/nanoGPT
 import os
 import pickle
 import torch
+from codecarbon import EmissionsTracker
 
 from model import GPT, GPTConfig
 
@@ -33,38 +34,51 @@ def load_meta(data_dir: str):
 
 
 def main():
-    ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
-
-    # train.py should store config with model parameters and data_dir
-    data_dir = ckpt["config"]["data_dir"]
-    model_cfg = ckpt["config"]["model"]
-
-    meta = load_meta(data_dir)
-    stoi = meta["stoi"]         # char to index mapping
-    itos = meta["itos"]         # index to char mapping
-
-    def encode(s: str):
-        # map unknown chars to a safe fallback if needed
-        return [stoi.get(ch, stoi[" "]) for ch in s]
-
-    def decode(tokens):
-        return "".join([itos[t] for t in tokens])
-
-    config = GPTConfig(**model_cfg)
-    model = GPT(config).to(DEVICE)
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-
-    idx = torch.tensor([encode(PROMPT)], dtype=torch.long, device=DEVICE)
-
-    out = model.generate(
-        idx,
-        max_new_tokens=MAX_NEW_TOKENS,
-        temperature=TEMPERATURE,
-        top_k=TOP_K
+    os.makedirs(OUT_DIR, exist_ok=True)
+    tracker = EmissionsTracker(
+        project_name="gwp_lm_infer",
+        output_dir=OUT_DIR,
+        output_file="emissions_infer.csv",
     )
+    tracker.start()
 
-    print(decode(out[0].tolist()))
+    try:
+        ckpt = torch.load(CKPT_PATH, map_location=DEVICE)
+
+        # train.py should store config with model parameters and data_dir
+        data_dir = ckpt["config"]["data_dir"]
+        model_cfg = ckpt["config"]["model"]
+
+        meta = load_meta(data_dir)
+        stoi = meta["stoi"]         # char to index mapping
+        itos = meta["itos"]         # index to char mapping
+
+        def encode(s: str):
+            # map unknown chars to a safe fallback if needed
+            return [stoi.get(ch, stoi[" "]) for ch in s]
+
+        def decode(tokens):
+            return "".join([itos[t] for t in tokens])
+
+        config = GPTConfig(**model_cfg)
+        model = GPT(config).to(DEVICE)
+        model.load_state_dict(ckpt["model_state"])
+        model.eval()
+
+        idx = torch.tensor([encode(PROMPT)], dtype=torch.long, device=DEVICE)
+
+        out = model.generate(
+            idx,
+            max_new_tokens=MAX_NEW_TOKENS,
+            temperature=TEMPERATURE,
+            top_k=TOP_K
+        )
+
+        print(decode(out[0].tolist()))
+    finally:
+        total_emissions = tracker.stop()
+        if total_emissions is not None:
+            print(f"Total inference emissions: {total_emissions:.6f} kg CO2eq")
 
 
 if __name__ == "__main__":
