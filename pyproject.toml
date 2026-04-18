@@ -1,0 +1,27 @@
+[project]
+name = "slm-sustainability"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+dependencies = [
+    # Core
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "tqdm",
+
+    # PyTorch (CPU)
+    "torch",
+    "torchvision",
+    "torchaudio",
+
+    # Notebooks
+    "jupyterlab",
+    "ipykernel",
+
+    # Optional
+    "requests",
+
+    # Pip-only dep
+    "codecarbon",
+]
