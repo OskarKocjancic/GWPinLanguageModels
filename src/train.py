@@ -11,6 +11,7 @@ Source: https://github.com/karpathy/nanoGPT
 import os
 import time
 import pickle
+import argparse
 from dataclasses import asdict
 
 import numpy as np
@@ -19,39 +20,33 @@ from codecarbon import EmissionsTracker
 
 from model import GPTConfig, GPT
 
-# -----------------------------------------------------------------------------
-# Experiment configuration
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train the GPT-style language model.")
 
-# I/O
-OUT_DIR = "out"
-DATA_DIR = os.path.join("data")
-EVAL_INTERVAL = 200     
-EVAL_ITERS = 50
-LOG_INTERVAL = 50
-SAVE_CHECKPOINT = True
+    parser.add_argument("--out-dir", default="out", help="Directory for checkpoints and emissions logs.")
+    parser.add_argument("--data-dir", default="data", help="Directory containing train.bin, val.bin, and meta.pkl.")
+    parser.add_argument("--eval-interval", type=int, default=200, help="How often to run validation, in iterations.")
+    parser.add_argument("--eval-iters", type=int, default=50, help="Number of batches to average during validation.")
+    parser.add_argument("--log-interval", type=int, default=50, help="How often to print training loss, in iterations.")
+    parser.add_argument("--save-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Save checkpoints during training.")
 
-# Model (main tunables)
-N_LAYER = 4
-N_HEAD = 4
-N_EMBD = 128
-DROPOUT = 0.1
-BIAS = True
+    parser.add_argument("--n-layer", type=int, default=4, help="Number of Transformer blocks.")
+    parser.add_argument("--n-head", type=int, default=4, help="Number of attention heads.")
+    parser.add_argument("--n-embd", type=int, default=128, help="Embedding dimension.")
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate.")
+    parser.add_argument("--bias", action=argparse.BooleanOptionalAction, default=True, help="Use bias terms in linear and layer norm layers.")
 
-# Training (main parameters you can also experiment with)
-SEED = 1
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-else:    
-    DEVICE = "cpu"
-DTYPE = "float32"       
-BATCH_SIZE = 32         # Number of sequences processed in parallel.
-BLOCK_SIZE = 256        # Maximum context length for predictions (e.g. 128 or 256). The longer the block size, the more memory and compute it requires, but it can also lead to better performance.
-MAX_ITERS = 2000        # Total number of training iterations. The more iterations, the better the model can perform, but it also takes more time and energy to train.
-LEARNING_RATE = 3e-4    # the standard starting learning rate, often good enough for a first try
-WEIGHT_DECAY = 0.1      # L2 Regularization
-GRAD_CLIP = 1.0         # To prevent exploding gradients
+    parser.add_argument("--seed", type=int, default=1, help="Random seed.")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="Training device.")
+    parser.add_argument("--dtype", default="float32", help="Recorded training dtype in checkpoints.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Number of sequences processed in parallel.")
+    parser.add_argument("--block-size", type=int, default=256, help="Maximum context length for predictions.")
+    parser.add_argument("--max-iters", type=int, default=2000, help="Total number of training iterations.")
+    parser.add_argument("--learning-rate", type=float, default=3e-4, help="AdamW learning rate.")
+    parser.add_argument("--weight-decay", type=float, default=0.1, help="L2 regularization strength.")
+    parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping threshold; set to 0 to disable.")
 
-# -----------------------------------------------------------------------------
+    return parser
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -102,106 +97,109 @@ def save_checkpoint(out_dir: str, model: GPT, optimizer: torch.optim.Optimizer, 
     torch.save(ckpt, os.path.join(out_dir, "ckpt.pt"))
 
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    set_seed(SEED)
+    args = build_arg_parser().parse_args()
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    set_seed(args.seed)
 
     tracker = EmissionsTracker(
         project_name="gwp_lm_train",
-        output_dir=OUT_DIR,
+        output_dir=args.out_dir,
         output_file="emissions_train.csv",
+        log_level="error",
     )
     tracker.start()
 
-    meta = load_meta(DATA_DIR)
+    meta = load_meta(args.data_dir)
     vocab_size = meta["vocab_size"] if meta and "vocab_size" in meta else 50304
 
     cfg = GPTConfig(
-        block_size=BLOCK_SIZE,
+        block_size=args.block_size,
         vocab_size=vocab_size,
-        n_layer=N_LAYER,
-        n_head=N_HEAD,
-        n_embd=N_EMBD,
-        dropout=DROPOUT,
-        bias=BIAS,
+        n_layer=args.n_layer,
+        n_head=args.n_head,
+        n_embd=args.n_embd,
+        dropout=args.dropout,
+        bias=args.bias,
     )
 
     # create the model and move it to the device
-    model = GPT(cfg).to(DEVICE)
+    model = GPT(cfg).to(args.device)
 
     # create the optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=LEARNING_RATE,
-        weight_decay=WEIGHT_DECAY,
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
         betas=(0.9, 0.95),
     )
 
     # (optional) uncomment this for printing model size once
-    # print(f"Device: {DEVICE}")
+    # print(f"Device: {args.device}")
     # print(f"Model parameters: {model.get_num_params():,}")
-    # print(f"Training for {MAX_ITERS} iterations | batch={BATCH_SIZE} | block={BLOCK_SIZE}")
+    # print(f"Training for {args.max_iters} iterations | batch={args.batch_size} | block={args.block_size}")
 
     total_emissions = None
     try:
         t0 = time.time()
-        for it in range(MAX_ITERS + 1):
+        for it in range(args.max_iters + 1):
             # periodic evaluation
-            if it % EVAL_INTERVAL == 0:
-                losses = estimate_loss(model, DATA_DIR, BLOCK_SIZE, BATCH_SIZE, DEVICE, EVAL_ITERS)
+            if it % args.eval_interval == 0:
+                losses = estimate_loss(model, args.data_dir, args.block_size, args.batch_size, args.device, args.eval_iters)
                 dt = time.time() - t0
                 print(f"iter {it:5d} | train loss {losses['train']:.4f} | val loss {losses['val']:.4f} | elapsed {dt:.1f}s")
 
-                if SAVE_CHECKPOINT and it > 0:
+                if args.save_checkpoint and it > 0:
                     config_dump = {
-                        "data_dir": DATA_DIR,
+                        "data_dir": args.data_dir,
                         "train": {
-                            "batch_size": BATCH_SIZE,
-                            "block_size": BLOCK_SIZE,
-                            "max_iters": MAX_ITERS,
-                            "learning_rate": LEARNING_RATE,
-                            "weight_decay": WEIGHT_DECAY,
-                            "grad_clip": GRAD_CLIP,
-                            "dtype": DTYPE,
-                            "device": DEVICE,
+                            "batch_size": args.batch_size,
+                            "block_size": args.block_size,
+                            "max_iters": args.max_iters,
+                            "learning_rate": args.learning_rate,
+                            "weight_decay": args.weight_decay,
+                            "grad_clip": args.grad_clip,
+                            "dtype": args.dtype,
+                            "device": args.device,
                         },
                         "model": asdict(cfg),
                     }
-                    save_checkpoint(OUT_DIR, model, optimizer, it, config_dump)
+                    save_checkpoint(args.out_dir, model, optimizer, it, config_dump)
 
             # training step
-            x, y = get_batch("train", DATA_DIR, BLOCK_SIZE, BATCH_SIZE, DEVICE)
+            x, y = get_batch("train", args.data_dir, args.block_size, args.batch_size, args.device)
             _, loss = model(x, y)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
 
-            if GRAD_CLIP and GRAD_CLIP > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+            if args.grad_clip and args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
             optimizer.step()
 
-            if it % LOG_INTERVAL == 0:
+            if it % args.log_interval == 0:
                 print(f"iter {it:5d} | loss {loss.item():.4f}")
 
         print("Training completed.")
 
         # Save final checkpoint
-        if SAVE_CHECKPOINT:
+        if args.save_checkpoint:
             config_dump = {
-                "data_dir": DATA_DIR,
+                "data_dir": args.data_dir,
                 "train": {
-                    "batch_size": BATCH_SIZE,
-                    "block_size": BLOCK_SIZE,
-                    "max_iters": MAX_ITERS,
-                    "learning_rate": LEARNING_RATE,
-                    "weight_decay": WEIGHT_DECAY,
-                    "grad_clip": GRAD_CLIP,
-                    "dtype": DTYPE,
-                    "device": DEVICE,
+                    "batch_size": args.batch_size,
+                    "block_size": args.block_size,
+                    "max_iters": args.max_iters,
+                    "learning_rate": args.learning_rate,
+                    "weight_decay": args.weight_decay,
+                    "grad_clip": args.grad_clip,
+                    "dtype": args.dtype,
+                    "device": args.device,
                 },
                 "model": asdict(cfg),
             }
-            save_checkpoint(OUT_DIR, model, optimizer, MAX_ITERS, config_dump)
+            save_checkpoint(args.out_dir, model, optimizer, args.max_iters, config_dump)
     finally:
         total_emissions = tracker.stop()
         if total_emissions is not None:
