@@ -45,6 +45,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="AdamW learning rate.")
     parser.add_argument("--weight-decay", type=float, default=0.1, help="L2 regularization strength.")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping threshold; set to 0 to disable.")
+    # name
+    parser.add_argument("--name", default="gwp_lm_train", help="Name for the training run (used in emissions tracking).")
+
 
     return parser
 
@@ -86,7 +89,7 @@ def estimate_loss(model: GPT, data_dir: str, block_size: int, batch_size: int, d
     model.train()
     return losses
 
-def save_checkpoint(out_dir: str, model: GPT, optimizer: torch.optim.Optimizer, iter_num: int, config: dict):
+def save_checkpoint(out_dir: str, model: GPT, optimizer: torch.optim.Optimizer, iter_num: int, config: dict, name: str = "ckpt.pt") -> None:
     os.makedirs(out_dir, exist_ok=True)
     ckpt = {
         "iter_num": iter_num,
@@ -94,7 +97,7 @@ def save_checkpoint(out_dir: str, model: GPT, optimizer: torch.optim.Optimizer, 
         "optim_state": optimizer.state_dict(),
         "config": config,
     }
-    torch.save(ckpt, os.path.join(out_dir, "ckpt.pt"))
+    torch.save(ckpt, out_dir + "/" + name)
 
 def main():
     args = build_arg_parser().parse_args()
@@ -103,10 +106,11 @@ def main():
     set_seed(args.seed)
 
     tracker = EmissionsTracker(
-        project_name="gwp_lm_train",
+        project_name=args.name,
         output_dir=args.out_dir,
-        output_file="emissions_train.csv",
-        log_level="error",
+        output_file=f"emissions_train.csv",
+        log_level="critical",
+        
     )
     tracker.start()
 
@@ -125,6 +129,11 @@ def main():
 
     # create the model and move it to the device
     model = GPT(cfg).to(args.device)
+
+    # print the number of parameters in the model
+    num_params = model.get_num_params()
+    print(f"Model parameters: {num_params:,}")
+    # return
 
     # create the optimizer
     optimizer = torch.optim.AdamW(
@@ -164,7 +173,7 @@ def main():
                         },
                         "model": asdict(cfg),
                     }
-                    save_checkpoint(args.out_dir, model, optimizer, it, config_dump)
+                    save_checkpoint(args.out_dir, model, optimizer, it, config_dump, name=args.name + ".pt")
 
             # training step
             x, y = get_batch("train", args.data_dir, args.block_size, args.batch_size, args.device)
@@ -199,7 +208,7 @@ def main():
                 },
                 "model": asdict(cfg),
             }
-            save_checkpoint(args.out_dir, model, optimizer, args.max_iters, config_dump)
+            save_checkpoint(args.out_dir, model, optimizer, args.max_iters, config_dump, name=args.name + ".pt")
     finally:
         total_emissions = tracker.stop()
         if total_emissions is not None:

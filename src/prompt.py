@@ -22,6 +22,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")
     parser.add_argument("--top-k", type=int, default=50, help="Top-k filtering threshold; use 0 to disable.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="Inference device.")
+    parser.add_argument("--name", default="gwp_lm_infer", help="Name for the inference run (used in emissions tracking).")
     return parser
 
 
@@ -33,13 +34,14 @@ def load_meta(data_dir: str):
 
 def main():
     args = build_arg_parser().parse_args()
-    ckpt_path = args.ckpt_path or os.path.join(args.out_dir, "ckpt.pt")
+    ckpt_path = args.ckpt_path or os.path.join(args.out_dir, f"{args.name}.pt")
 
     os.makedirs(args.out_dir, exist_ok=True)
     tracker = EmissionsTracker(
-        project_name="gwp_lm_infer",
+        project_name=args.name,
         output_dir=args.out_dir,
         output_file="emissions_infer.csv",
+        log_level="error",
     )
     tracker.start()
 
