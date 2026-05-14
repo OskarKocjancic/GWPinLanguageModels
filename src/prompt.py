@@ -37,51 +37,53 @@ def main():
     ckpt_path = args.ckpt_path or os.path.join(args.out_dir, f"{args.name}.pt")
 
     os.makedirs(args.out_dir, exist_ok=True)
+
+    # Load everything BEFORE starting the tracker
+    ckpt = torch.load(ckpt_path, map_location=args.device)
+
+    data_dir = ckpt["config"]["data_dir"]
+    model_cfg = ckpt["config"]["model"]
+
+    meta = load_meta(data_dir)
+    stoi = meta["stoi"]
+    itos = meta["itos"]
+
+    def encode(s: str):
+        return [stoi.get(ch, stoi[" "]) for ch in s]
+
+    def decode(tokens):
+        return "".join([itos[t] for t in tokens])
+
+    config = GPTConfig(**model_cfg)
+    model = GPT(config).to(args.device)
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+
+    idx = torch.tensor([encode(args.prompt)], dtype=torch.long, device=args.device)
+
     tracker = EmissionsTracker(
         project_name=args.name,
         output_dir=args.out_dir,
         output_file="emissions_infer.csv",
         log_level="error",
     )
+
+    # Track only generation
     tracker.start()
-
     try:
-        ckpt = torch.load(ckpt_path, map_location=args.device)
-
-        # train.py should store config with model parameters and data_dir
-        data_dir = ckpt["config"]["data_dir"]
-        model_cfg = ckpt["config"]["model"]
-
-        meta = load_meta(data_dir)
-        stoi = meta["stoi"]         # char to index mapping
-        itos = meta["itos"]         # index to char mapping
-
-        def encode(s: str):
-            # map unknown chars to a safe fallback if needed
-            return [stoi.get(ch, stoi[" "]) for ch in s]
-
-        def decode(tokens):
-            return "".join([itos[t] for t in tokens])
-
-        config = GPTConfig(**model_cfg)
-        model = GPT(config).to(args.device)
-        model.load_state_dict(ckpt["model_state"])
-        model.eval()
-
-        idx = torch.tensor([encode(args.prompt)], dtype=torch.long, device=args.device)
-
         out = model.generate(
             idx,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
             top_k=args.top_k if args.top_k > 0 else None,
         )
-
-        print(decode(out[0].tolist()))
     finally:
         total_emissions = tracker.stop()
-        if total_emissions is not None:
-            print(f"Total inference emissions: {total_emissions:.6f} kg CO2eq")
+
+    print(decode(out[0].tolist()))
+
+    if total_emissions is not None:
+        print(f"Total inference emissions: {total_emissions:.6f} kg CO2eq")
 
 
 if __name__ == "__main__":
